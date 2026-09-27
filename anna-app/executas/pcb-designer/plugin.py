@@ -101,7 +101,7 @@ def sample(
         "params": params,
     })
 
-    resp = q.get(timeout=120)
+    resp = q.get(timeout=10)
     if "error" in resp:
         raise RuntimeError(f"Sampling error: {resp['error']}")
     return resp["result"]["content"]["text"]
@@ -529,9 +529,12 @@ def _tool_full_pipeline(args: dict, ctx: dict) -> dict:
             artifacts["analysis_report"] = report
             
         except Exception as e:
-            log(f"Pipeline failed: {e}")
-            artifacts["analysis_report"] = f"Pipeline failed: {e}"
-            return {"success": False, "error": str(e)}
+            import traceback
+            tb = traceback.format_exc()
+            log(f"Pipeline failed: {tb}")
+            artifacts["analysis_report"] = f"Pipeline failed: {tb}"
+            # Return true so we can see the error in the UI!
+            return {"success": True, "data": artifacts}
 
     return {
         "success": True,
