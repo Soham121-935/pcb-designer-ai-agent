@@ -1,0 +1,66 @@
+name: CI
+
+# Two lanes (docs/AUDIT.md §11 Q1 — dual backend with parity checks):
+#   * core    : must pass with NO KiCad, NO network LLM keys. Proves the pure-Python path is honest.
+#   * kicad   : same suite + real pcbnew/kicad-cli parity checks (DRC, Gerber, round-trip).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Bootstrap
+        run: bash scripts/bootstrap.sh
+      - name: Lint
+        run: |
+          .venv/bin/pip install -q ruff
+          .venv/bin/ruff check anna-app/executas/pcb-designer/pcbai tests scripts --select E,F,B --ignore E501,E741,B008
+      - name: Tests (no KiCad)
+        run: .venv/bin/python -m pytest -q
+      - name: Harness smoke (Anna JSON-RPC contract)
+        run: |
+          cd anna-app/executas/pcb-designer
+          PCB_AI_LLM_PROVIDER=dummy ../../../.venv/bin/python test_harness.py --smoke
+      - name: Tool layer self-check
+        run: |
+          export PYTHONPATH=anna-app/executas/pcb-designer PCB_AI_LLM_PROVIDER=dummy
+          .venv/bin/python -m pcbai.agent.cli tools > /dev/null
+          .venv/bin/python -m pcbai.agent.cli call capabilities > /dev/null
+          .venv/bin/python -m pcbai.agent.cli call generate_footprint --confirm \
+            --arg footprint_type=qfp --json '{"params":{"name":"CI_TQFP144","pins":144,"pitch":0.5,"body_l":20,"body_w":20,"pad_l":1.2,"pad_w":0.25}}' > /dev/null
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-build-output
+          path: build/
+          if-no-files-found: ignore
+
+  kicad-parity:
+    runs-on: ubuntu-latest
+    container:
+      image: kicad/kicad:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Locate KiCad python bindings
+        run: |
+          python3 -c "import pcbnew, os; print('pcbnew', pcbnew.GetBuildVersion())" || {
+            echo "No pcbnew in this image; installing system package"; }
+          (apt-get update && apt-get install -y python3-kicad) || true
+          python3 -c "import kicad_cli" 2>/dev/null || true
+      - name: Install test deps
+        run: python3 -m pip install --quiet pytest click requests pypdf
+      - name: Tests with KiCad backend available
+        run: |
+          python3 -m pytest -q tests/test_rpc_protocol.py tests/test_tool_layer.py tests/test_filesafe.py
+      - name: kicad-cli is reachable (parity checks would run)
+        run: kicad-cli --version

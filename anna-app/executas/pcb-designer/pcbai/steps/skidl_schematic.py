@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from pcbai.core.logger import get_logger
+
+logger = get_logger("pcbai.skidl")
+
+
 from typing import List, Dict
 
 try:
@@ -104,6 +109,6 @@ def bom_to_schematic(bom: List[Dict]) -> str:
     try:
         ERC()
     except Exception as e:
-        print(f"ERC failed (often due to stub parts): {e}")
+        logger.warning("ERC failed (often due to stub parts): %s", e)
 
     return generate_netlist()

@@ -17,19 +17,25 @@ import traceback
 from typing import Optional
 
 # ── KiCad Python bindings ─────────────────────────────────────────────────────
-_KICAD_LIB = "/usr/lib/kicad/lib/python3/dist-packages"
-if _KICAD_LIB not in sys.path:
-    sys.path.insert(0, _KICAD_LIB)
+from pcbai.core.logger import get_logger
+from pcbai.eda import backend as _backend
 
+logger = get_logger("pcbai.pcb_writer")
+
+# KiCad bindings are OPTIONAL (docs/AUDIT.md Q1): import lazily via the backend probe.
 try:
-    import pcbnew
+    pcbnew = _backend.pcbnew()
     _PCBNEW_OK = True
-except ImportError:
+except Exception as _exc:  # ImportError, or a broken KiCad python build
+    pcbnew = None  # type: ignore[assignment]
     _PCBNEW_OK = False
-    print("[kicad_pcb_writer] WARNING: pcbnew not available; PCB generation skipped.")
+    logger.warning("pcbnew not available (%s); native KiCad board authoring skipped.", _exc)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
-FP_LIB_ROOT = "/usr/share/kicad/footprints"
+# Resolved through the capability probe so an absent KiCad install never hard-fails the import.
+FP_LIB_ROOT = _backend.footprint_lib_root() or os.getenv(
+    "PCB_AI_KICAD_FOOTPRINT_DIR", "/usr/share/kicad/footprints"
+)
 BOARD_W = 40.0   # mm
 BOARD_H = 30.0   # mm
 CORNER_INSET = 2.5  # M2 hole inset from corners
@@ -61,7 +67,7 @@ def _load_fp(lib_name: str, fp_name: str) -> Optional["pcbnew.FOOTPRINT"]:
         fp = pcbnew.FootprintLoad(lib_path, fp_name)
         return fp
     except Exception as exc:
-        print(f"[kicad_pcb_writer] WARN: cannot load {lib_name}:{fp_name} → {exc}")
+        logger.warning("cannot load %s:%s -> %s", lib_name, fp_name, exc)
         return None
 
 
@@ -280,7 +286,7 @@ def generate_pcb(output_path: str, project_name: str = "esp32c3_sensor") -> bool
     Returns True on success, False if pcbnew is unavailable.
     """
     if not _PCBNEW_OK:
-        print("[kicad_pcb_writer] pcbnew unavailable; skipping PCB generation.")
+        logger.warning("pcbnew unavailable; native PCB generation skipped (no board file written)")
         return False
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
@@ -389,10 +395,9 @@ def generate_pcb(output_path: str, project_name: str = "esp32c3_sensor") -> bool
             _place_fp(board, fp, ref, value, x, y, angle)
             _assign_nets_by_map(fp_name, fp, nets)
             loaded_fps[ref] = fp
-            print(f"[kicad_pcb_writer] Placed {ref} ({value}) at ({x}, {y})")
+            logger.info("placed %s (%s) at (%.2f, %.2f)", ref, value, x, y)
         except Exception:
-            print(f"[kicad_pcb_writer] ERROR placing {ref}:")
-            traceback.print_exc()
+            logger.error("placing %s failed:\n%s", ref, traceback.format_exc())
 
     # ── Extra net assignments for passives ────────────────────────────────────
     _assign_passive_nets(loaded_fps, nets)
@@ -412,11 +417,11 @@ def generate_pcb(output_path: str, project_name: str = "esp32c3_sensor") -> bool
         filler = pcbnew.ZONE_FILLER(board)
         filler.Fill(board.Zones())
     except Exception as e:
-        print(f"[kicad_pcb_writer] Zone fill skipped: {e}")
+        logger.warning("zone fill skipped: %s", e)
 
     # ── Save ──────────────────────────────────────────────────────────────────
     pcbnew.SaveBoard(output_path, board)
-    print(f"[kicad_pcb_writer] Saved PCB → {output_path}")
+    logger.info("saved PCB -> %s", output_path)
     return True
 
 
@@ -576,5 +581,5 @@ def _add_power_traces(
                        p2.x / 1e6, p2.y / 1e6,
                        nets["LED_ANODE"], 0.2)
     except Exception:
-        print("[kicad_pcb_writer] Some traces skipped:")
+        logger.warning("some traces were skipped")
         traceback.print_exc()

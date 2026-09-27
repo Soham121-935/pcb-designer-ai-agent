@@ -382,3 +382,66 @@ feat(sv16): project scaffold and board design rules
 
 **No architectural changes have been made.** Only this document plus a scratch probe under `.audit/` (untracked,
 safe to delete).
+
+---
+
+## 11. DECISIONS LOCKED (2026-09-27, by the user)
+
+| # | Decision | Consequence for implementation |
+|---|---|---|
+| **Q1** | **Dual backend with parity checks** — pure-Python S-expression model is primary; `pcbnew` / `kicad-cli` are used to cross-check every write when available. | Introduce `pcbai/eda/backend.py` with `kicad_available()` / `kicad_report()`. Validation reports `backend: pcbnew` (authoritative) or `backend: pcbnew-missing` (**explicitly `skipped`, never silently `passed`**). CI gets an optional KiCad container job for the parity lane. All `import pcbnew` calls become lazy/optional. |
+| **Q2** | **I (the agent) am the primary PCB-design surface; Anna is secondary.** | Standalone-first: root-level `pyproject.toml`, `pcbai` console scripts, a repo-local project workspace, and the tool loop live at repo level. `plugin.py` + `executa.json` are kept working as a thin adapter (no breaking API change to the 7 tools). |
+| **Q3** | **Target KiCad 10 exactly** for emitted files. | `board.kicad_pcb`: `(version 20260206)` + `(generator_version "10.0")`; schematics upgraded to the KiCad 10 `.kicad_sch` dialect; footprints rewritten from KiCad 5/6 `module`/`fp_text` to `footprint`/`property`; the 4-way dialect split (D7) collapses to one. Reading accepts KiCad 7→10 files. |
+| **Q4** | **SV-16 fab target: decided later.** | Default design rules ship as an editable per-project file (4-layer JLC-style preset: 0.127/0.127 mm, 0.2 mm drill) so nothing is hardcoded; the real target is chosen before Phase 9. |
+
+Phase 2 (below) is the only phase now in progress.
+
+---
+
+## 12. Corrections to this audit (found while fixing, same day)
+
+* **§4/§6 template-board geometry:** I first reported "0 copper zones" for
+  `template_project/board.kicad_pcb` using `grep -c "(zone "`. That was a tooling artifact — a
+  string count cannot distinguish top-level `(zone …)` forms from `(zone_connect …)` inside pads.
+  A depth-aware S-expression scan gives the correct facts, now asserted in
+  `tests/test_tool_layer.py::test_template_board_missing_net_table_is_a_known_gap`:
+
+  | property | value |
+  |---|---|
+  | top-level `footprint` | 21 |
+  | top-level `zone` | 3 (2 GND pours + 1 rule area) |
+  | top-level `segment` (copper) | **9** |
+  | top-level `via` | 0 |
+  | top-level `net` (net table) | **0** ← still the blocking defect |
+  | `gr_line` on Edge.Cuts | 4 (closed 40×30 outline, so the outline itself is fine) |
+  | `net_class` | 0 |
+
+  Conclusion unchanged: it is a placed, poured, barely-connected board, not a routed design.
+* `footprint_lib_root()`/`FP_LIB_ROOT` is now env-overridable; the hardcoded
+  `/usr/share/kicad/footprints` default remains only as a fallback.
+
+## 13. Phase 2 status — what was actually fixed
+
+| Audit finding | Fix | Where | Verified by |
+|---|---|---|---|
+| D3 stdout pollution | stderr-only logger; `install_stderr_guard()` diverts stray `print()`; protocol writer bound to the *real* stdout object before the guard | `core/logger.py`, `plugin.py:_PROTOCOL_OUT`, `main()` | `test_protocol_channel_is_pure_json`, `test_generated_child_script_is_valid_python_and_logs_to_stderr` |
+| D2 fake `success:true` | `route_pcb` returns `ok/reason`; plugin propagates it; `full_pipeline` returns `success:false` on genuine failure; CLI no longer prints ✅ for a skipped board | `pcb_router.py`, `plugin.py`, `pipeline/cli.py` | `test_route_pcb_reports_missing_backend_as_failure` |
+| D1 template presented as a design | `compile_design` reports `mode` = `generated`\|`template`, `template_only`, warnings, `backend` capabilities; template copy is opt-out (`PCB_AI_ALLOW_TEMPLATE_COPY=0` → raises) | `steps/design_compiler.py` | `test_full_pipeline_never_presents_a_template_as_a_design`, `tests/test_design_compiler.py` |
+| D6 hard `import pcbnew` | capability probe + lazy `backend.pcbnew()`; KiCad paths from env | `pcbai/eda/backend.py`, `core/config.py` | `make backend`, `test_capabilities_never_claims_kicad_it_does_not_have` |
+| D5 footprints dir never created | `route_pcb` creates `footprints/`, writes `netlist.json` (was `netlist.xml`), always materialises inputs | `pcb_router.py` | `test_route_pcb_creates_the_footprints_dir_it_reads` |
+| D7 format drift (partly) | one place now owns "which KiCad dialect" — footprints still emit KiCad 5/6 and are **flagged in tool warnings** until the Q3/KiCad-10 writer rewrite | `agent/tools.py` | `test_generate_footprint_writes_parses_and_pads` |
+| D9 hardcoded author paths | demos moved to `scripts/`, path computed from `__file__`; `test_rpc.py` prefers `.venv` then falls back | `scripts/` | manual `python3 scripts/test_rpc.py` |
+| D10 missing `typing` imports | added `Any/Dict/List/Optional` | `plugin.py` | `test_typing_annotations_actually_resolve` |
+| D12 corrupt test PDF | removed `test_datasheet_MP1584.pdf` (it was an HTML error page); kept the valid LM5164 PDF | — | `pytest` green |
+| D13 hygiene | deleted `.coverage`, `plugin.log`, `plugin.erc`, `plugin.net`, `plugin_sklib.py`, 0-byte PyInstaller binaries; `.gitignore` extended (`*.bak`, `.history/`, `build/`) | repo root | `git status` |
+| D8 broken distribution | `executa.json` `distribution.active` → `local`; binary profile keeps a build note instead of pointing at a missing tarball | `executa.json` | JSON validated |
+| D11 timeout | `sample()` timeout now `PCB_AI_SAMPLE_TIMEOUT` (default 60 s) with `queue.Empty` → actionable error | `plugin.py`, `core/config.py` | smoke suite |
+| D14 CLI honesty | `design` prints mode/warnings, `--no-allow-template`, new `capabilities` command | `pipeline/cli.py` | `make demo` |
+| no file safety | `core/filesafe.py`: atomic write, `.bak` + append-only `.history/`, `FileTransaction` rollback, protected extensions, project-root confinement | `pcbai/core/filesafe.py` | `tests/test_filesafe.py` (9 tests) |
+| no repo-level tool surface | `pcbai/agent/{tools,registry,cli}.py` with read-only vs mutating classification, confirm gate, `not-implemented (Phase N)` refusals | `pcbai/agent/` | `tests/test_tool_layer.py` (20 tests) |
+| no regression protection | 63 tests, runnable with no KiCad/network; `make` targets; two-lane CI (core + `kicad/kicad` parity image) | `tests/`, `Makefile`, `.github/workflows/ci.yml` | `make test` |
+
+**Deliberately NOT done in Phase 2** (deferred, with reasons): replacing the placeholder netlist
+(`schematic_synthesizer`), the KiCad-10 writer rewrite for footprints/schematics, the real board
+model/parser, DRC/ERC, and removal of the frontend's browser-side file fabrication — all are
+Phase 4-6/7 work and each needs the parser as a prerequisite.

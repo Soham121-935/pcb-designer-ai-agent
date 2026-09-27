@@ -1,5 +1,5 @@
 from unittest import mock
-from pcbai.steps.datasheet_package_extractor import extract_package_params_from_pdf, PackageGuess
+from pcbai.steps.datasheet_package_extractor import extract_package_params_from_pdf
 
 def test_extract_soic():
     mock_text = "The device is available in a 14-pin SOIC package. Pitch: 1.27mm. Body length: 8.65 mm. Body width: 3.9 mm."

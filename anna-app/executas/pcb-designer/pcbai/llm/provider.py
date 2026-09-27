@@ -4,7 +4,16 @@ import os
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 import json
-import requests
+import os as _os
+
+try:  # `requests` is only needed when talking to a real provider
+    import requests
+except ImportError:  # pragma: no cover
+    requests = None  # type: ignore[assignment]
+
+from pcbai.core.logger import get_logger
+
+logger = get_logger("pcbai.llm")
 
 def _get_max_tokens(kwargs_tokens: int) -> int:
     env_tokens = os.getenv("PCB_AI_MAX_TOKENS")
@@ -25,7 +34,16 @@ class LLMProvider(ABC):
 # ─────────────────────────────────────────────
 # LM Studio (OpenAI-compatible)
 # ─────────────────────────────────────────────
+def _require_requests() -> None:
+    if requests is None:
+        raise RuntimeError(
+            "python-requests is required for remote LLM providers (pip install requests). "
+            "Use PCB_AI_LLM_PROVIDER=dummy or 'anna' sampling to run without it."
+        )
+
+
 class LMStudioProvider(LLMProvider):
+    # (calls _require_requests() in chat())
     def __init__(self, base_url: str = "http://localhost:1234", model: Optional[str] = None):
         self.base_url = base_url.rstrip("/")
         self._model = model
@@ -39,6 +57,7 @@ class LMStudioProvider(LLMProvider):
         return models[0]["id"]
 
     def chat(self, messages: List[Dict], temperature: float = 0.2, max_tokens: int = 512, **kwargs) -> str:
+        _require_requests()
         payload = {
             "model": self._get_model(),
             "messages": messages,
@@ -61,11 +80,13 @@ class LMStudioProvider(LLMProvider):
 # Ollama
 # ─────────────────────────────────────────────
 class OllamaProvider(LLMProvider):
+    # (calls _require_requests() in chat())
     def __init__(self, base_url: str = "http://localhost:11434", model: str = "llama3"):
         self.base_url = base_url.rstrip("/")
         self.model = model
 
     def chat(self, messages: List[Dict], temperature: float = 0.2, max_tokens: int = 512, **kwargs) -> str:
+        _require_requests()
         payload = {
             "model": self.model,
             "messages": messages,
@@ -87,12 +108,14 @@ class OllamaProvider(LLMProvider):
 # OpenAI
 # ─────────────────────────────────────────────
 class OpenAIProvider(LLMProvider):
+    # (calls _require_requests() in chat())
     def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o-mini"):
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.model = model
 
     def chat(self, messages: List[Dict], temperature: float = 0.2, max_tokens: int = 512, **kwargs) -> str:
         if not self.api_key: raise RuntimeError("OPENAI_API_KEY not set")
+        _require_requests()
         r = requests.post(
             "https://api.openai.com/v1/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}"},
@@ -111,12 +134,14 @@ class OpenAIProvider(LLMProvider):
 # Anthropic (Claude)
 # ─────────────────────────────────────────────
 class AnthropicProvider(LLMProvider):
+    # (calls _require_requests() in chat())
     def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20240620"):
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         self.model = model
 
     def chat(self, messages: List[Dict], temperature: float = 0.2, max_tokens: int = 512, **kwargs) -> str:
         if not self.api_key: raise RuntimeError("ANTHROPIC_API_KEY not set")
+        _require_requests()
         # Anthropic expects 'system' out of band and strictly alternating user/assistant
         system_text = ""
         filtered_msgs = []
@@ -152,12 +177,14 @@ class AnthropicProvider(LLMProvider):
 # Gemini (Google)
 # ─────────────────────────────────────────────
 class GeminiProvider(LLMProvider):
+    # (calls _require_requests() in chat())
     def __init__(self, api_key: Optional[str] = None, model: str = "gemini-1.5-flash"):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY")
         self.model = model
 
     def chat(self, messages: List[Dict], temperature: float = 0.2, max_tokens: int = 512, **kwargs) -> str:
         if not self.api_key: raise RuntimeError("GEMINI_API_KEY not set")
+        _require_requests()
         # Format messages for Gemini API
         contents = []
         for m in messages:
@@ -172,9 +199,9 @@ class GeminiProvider(LLMProvider):
             }
         }
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}"
-        print(f"DEBUG: Requesting {url.split('key=')[0]} with payload size {len(str(payload))}")
+        logger.debug("requesting %s (payload %d chars)", url.split("key=")[0], len(str(payload)))
         r = requests.post(url, json=payload, timeout=60)
-        print(f"DEBUG: Response status {r.status_code}")
+        logger.debug("response status %s", r.status_code)
         try:
             r.raise_for_status()
         except Exception as e:
@@ -189,6 +216,8 @@ class GeminiProvider(LLMProvider):
 # Dummy (fallback / testing)
 # ─────────────────────────────────────────────
 class DummyProvider(LLMProvider):
+    """Deterministic provider for tests / offline runs: returns canned JSON for structured prompts."""
+
     def complete(self, prompt: str, **kwargs) -> str:
         return "DummyProvider: configure PCB_AI_LLM_PROVIDER"
     def chat(self, messages: List[Dict], **kwargs) -> str:
@@ -218,5 +247,5 @@ def get_provider() -> LLMProvider:
         return AnthropicProvider(model=os.getenv("PCB_AI_MODEL", "claude-3-5-sonnet-20240620"))
     elif name == "gemini":
         return GeminiProvider(model=os.getenv("PCB_AI_MODEL", "gemini-1.5-flash"))
-        
+
     return DummyProvider()

@@ -1,9 +1,31 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Dict
 
+from pcbai.core.logger import get_logger
 from pcbai.llm.provider import get_provider
+
+logger = get_logger("pcbai.requirements")
+
+_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+
+
+def extract_json(raw: str) -> Dict:
+    """Pull the first JSON object from a model reply (handles prose and ``` fences)."""
+    text = (raw or "").strip()
+    m = _FENCE.search(text)
+    if m:
+        text = m.group(1).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError(f"no JSON object in model response: {text[:120]!r}")
+    return json.loads(text[start : end + 1])
 
 
 SYSTEM_PROMPT = """\
@@ -41,16 +63,17 @@ def parse_requirements(natural_text: str) -> Dict:
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
-        result = json.loads(raw.strip())
+        result = extract_json(raw)
         result.setdefault("notes", natural_text.strip())
+        result["source"] = "llm"
         return result
 
     except Exception as e:
         # Fallback: simple keyword match
-        print(f"[requirements_parser] LLM unavailable ({e}), using keyword fallback.")
+        logger.warning("LLM unavailable (%s); using keyword fallback", e)
         lower = natural_text.lower()
         keywords = [w for w in [
             "bluetooth", "wifi", "usb", "buck", "lipo", "mcu", "sd", "ldo", "esp32",
             "adc", "opamp", "led", "relay", "sensor", "motor", "display"
         ] if w in lower]
-        return {"keywords": keywords, "notes": natural_text.strip()}
+        return {"keywords": keywords, "notes": natural_text.strip(), "source": "keyword-fallback"}

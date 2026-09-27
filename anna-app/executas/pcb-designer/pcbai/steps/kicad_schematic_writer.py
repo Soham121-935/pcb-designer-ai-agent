@@ -18,6 +18,11 @@ Schematic covers:
 
 from __future__ import annotations
 
+from pcbai.core.logger import get_logger
+
+logger = get_logger("pcbai.sch_writer")
+
+
 import uuid
 import os
 from typing import Optional
@@ -476,4 +481,4 @@ def generate_schematic(output_path: str) -> None:
     with open(output_path, "w", encoding="utf-8") as fh:
         fh.writelines(lines)
 
-    print(f"[kicad_schematic_writer] Wrote {output_path}")
+    logger.info("wrote schematic -> %s", output_path)

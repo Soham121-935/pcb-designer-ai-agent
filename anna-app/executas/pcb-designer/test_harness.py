@@ -319,11 +319,37 @@ def run_smoke_tests(harness: AnnaLocalHarness) -> bool:
     has_error = "error" in resp
     check("unknown tool returns error", {"result": {"success": has_error}})
 
-    # Test 6: full_pipeline
+    # Test 6: full_pipeline — must either really generate, or say so honestly
     resp = harness.invoke_tool("full_pipeline", {
         "description": "Simple LED blinker with an ATmega328"
-    }, timeout=90)
-    check("full_pipeline", resp)
+    }, timeout=120)
+    result = resp.get("result", {})
+    check("full_pipeline (responds without crashing)", resp if isinstance(result, dict) else {})
+    data = result.get("data") or {}
+    mode = data.get("mode")
+    if result.get("success"):
+        ok_mode = mode in ("generated", "template")
+        check(f"full_pipeline reports mode (got {mode!r})", {"result": {"success": ok_mode}})
+        if mode == "template":
+            check("template result is flagged template_only",
+                  {"result": {"success": bool(data.get("template_only"))}})
+            check("template result carries a warning (not presented as a design)",
+                  {"result": {"success": bool(data.get("warnings"))}})
+            print(f"    {YELLOW}! mode=template: reference board copied, no design produced{RESET}")
+    else:
+        check("failure carries a machine-readable reason",
+              {"result": {"success": bool(result.get("reason"))}})
+        print(f"    {YELLOW}! full_pipeline failed honestly: {str(result.get('error'))[:90]}{RESET}")
+
+    # Test 7: honesty of a KiCad-dependent tool without KiCad
+    resp = harness.invoke_tool("route_pcb", {"netlist_json": json.dumps({"nets": [], "components": []})},
+                              timeout=60)
+    res = resp.get("result", {})
+    if res.get("success"):
+        check("route_pcb must not report success when the build failed", {"result": {"success": False}})
+    else:
+        check("route_pcb reports an explicit reason when KiCad is missing",
+              {"result": {"success": res.get("reason") in ("backend-unavailable", "router-failed", "timeout")}})
 
     print(f"\n{BOLD}Results: {GREEN}{tests_passed} passed{RESET}, {RED}{tests_failed} failed{RESET}\n")
     return tests_failed == 0

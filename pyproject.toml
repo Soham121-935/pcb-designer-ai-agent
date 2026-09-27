@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Repo-level project for the STANDALONE PCB agent (docs/AUDIT.md §11, Q2:
+# "you are supposed to be the AI agent who works on the PCB designing, Anna can be secondary").
+#
+# The implementation package is NOT moved: `pcbai` physically lives in
+# anna-app/executas/pcb-designer/pcbai so the Anna Executa plugin keeps its layout.
+# This file just makes that one package importable/installable from the repo root.
+# ─────────────────────────────────────────────────────────────────────────────
+[project]
+name = "pcb-agent"
+version = "0.3.0"
+description = "PCB design AI agent: inspect, modify and validate KiCad projects through a typed tool layer"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "PCB Designer AI Agent Contributors" }]
+dependencies = [
+  "click>=8.1",
+  "requests>=2.31",
+  "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+pdf = ["pypdf>=4.2", "pdfminer.six>=20221105"]
+schematic = ["skidl>=1.3"]
+test = ["pytest>=8.2"]
+dev = ["pytest>=8.2", "ruff>=0.5"]
+
+[project.scripts]
+pcbai = "pcbai.pipeline.cli:main"
+pcbai-agent = "pcbai.agent.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "anna-app/executas/pcb-designer" }
+
+[tool.setuptools.packages.find]
+where = ["anna-app/executas/pcb-designer"]
+include = ["pcbai*"]
+
+[tool.setuptools.package-data]
+"pcbai.steps" = ["template_project/**"]
+
+[tool.pytest.ini_options]
+# Lets `pytest` run straight from the repo root with no install step.
+pythonpath = ["anna-app/executas/pcb-designer"]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+# Kept permissive while the codebase is being repaired; tighten per phase.
+select = ["E", "F", "B", "C4", "SIM"]
+ignore = ["E501", "E741", "B008", "SIM105"]

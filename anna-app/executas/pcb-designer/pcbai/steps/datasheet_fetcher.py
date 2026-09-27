@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import os
-from typing import List, Dict, Optional
-import requests
+from typing import List, Optional
+
+try:
+    import requests
+except ImportError:  # pragma: no cover
+    requests = None  # type: ignore[assignment]
 
 
 DATASHEET_SOURCES = [

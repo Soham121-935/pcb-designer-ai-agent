@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import json
+
 import click
 
 from pcbai.core.logger import get_logger
@@ -30,21 +32,55 @@ def main():
 
 @main.command()
 @click.argument("description", nargs=-1)
-@click.option("--out", "outdir", type=click.Path(), default="build")
-def design(description: str, outdir: str):
+@click.option("--out", "outdir", type=click.Path(), default=None,
+              help="Output directory (default: $PCB_AI_WORKDIR or ./build).")
+@click.option("--allow-template/--no-allow-template", default=None,
+              help="Copy the shipped ESP32-C3 reference board when generation is impossible. "
+                   "Default: $PCB_AI_ALLOW_TEMPLATE_COPY (currently on for UI compatibility).")
+def design(description: str, outdir: str, allow_template: bool):
     """Full end-to-end PCB design: prompt → BOM → schematic → PCB → Gerbers → zip."""
-    from pcbai.steps.design_compiler import compile_design
+    from pcbai.core.config import settings
+    from pcbai.steps.design_compiler import compile_design, DesignNotGenerated
+
     text = " ".join(description)
     if not text.strip():
         raise click.UsageError("Please provide a design description.")
+    outdir = outdir or os.path.join(settings.workdir, "design")
     click.echo(f"[pcbai] Compiling design: {text[:80]}…")
-    result = compile_design(text, outdir)
-    click.echo(f"[pcbai] ✅ Design complete!")
+    kw = {} if allow_template is None else {"allow_template_copy": allow_template}
+    try:
+        result = compile_design(text, outdir, **kw)
+    except DesignNotGenerated as exc:
+        raise click.ClickException(str(exc))
+    if result["mode"] == "generated":
+        click.echo("[pcbai] Design generated with the KiCad writers.")
+    else:
+        click.secho("[pcbai] ⚠ TEMPLATE MODE — no design was produced from your prompt.", fg="yellow", bold=True)
+    for w in result.get("warnings", []):
+        click.secho(f"  ! {w}", fg="yellow")
+    click.echo(f"  Mode       : {result['mode']}")
     click.echo(f"  BOM        : {len(result['bom'])} components")
     click.echo(f"  Schematic  : {result['sch']}")
     click.echo(f"  PCB        : {result['pcb']}")
     click.echo(f"  Gerbers    : {result['gerbers']}")
     click.echo(f"  ZIP        : {result['zip']}")
+
+
+@main.command()
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+def capabilities(as_json: bool):
+    """Report which EDA backends are usable here (KiCad, pcbnew, footprints, Freerouting)."""
+    from pcbai.eda import backend
+    caps = backend.capabilities().to_dict()
+    if as_json:
+        click.echo(json.dumps(caps, indent=2))
+        return
+    for k, v in caps.items():
+        if k in ("notes",):
+            continue
+        click.echo(f"  {k:26}: {v if v not in (None, False) else '— not available'}")
+    for n in caps.get("notes", []):
+        click.secho(f"  note: {n}", fg="yellow")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

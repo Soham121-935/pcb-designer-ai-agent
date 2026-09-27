@@ -83,9 +83,11 @@ def _find_first_int(pattern: str, text: str) -> Optional[int]:
 
 import os
 import base64
-import requests
-import json
+
+from pcbai.core.logger import get_logger
 from pcbai.llm.provider import get_provider
+
+logger = get_logger("pcbai.extractor")
 
 def extract_with_llm(text: str) -> Optional[PackageGuess]:
     """Use the configured LLM to extract package parameters from datasheet text."""
@@ -132,7 +134,7 @@ Datasheet Text:
                 ep_w=float(data.get('ep_w')) if data.get('ep_w') is not None else None
             )
     except Exception as e:
-        print(f"[Extractor] LLM parsing failed: {e}")
+        logger.warning("LLM parsing failed: %s", e)
     return None
 
 def extract_with_vision(pdf_path: str, provider: str) -> Optional[PackageGuess]:

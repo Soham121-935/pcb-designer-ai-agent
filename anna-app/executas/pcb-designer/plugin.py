@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import uuid
 import queue
@@ -16,11 +17,48 @@ import threading
 import tempfile
 import traceback
 from dataclasses import asdict
-# The pcbai module is now bundled directly in this folder.
+from typing import Any, Dict, List, Optional
 
-# ── stderr helper (stdout is reserved for JSON-RPC) ────────
+# The pcbai module is bundled directly in this folder — make it importable when the plugin is
+# started from outside its own directory (previously only `uv run --project ...` worked).
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+# ── stderr helper (stdout is RESERVED for JSON-RPC; nothing else may write to it) ──
+try:
+    from pcbai.core.logger import log as _logger_log
+    _log_impl = _logger_log
+except Exception:  # pragma: no cover - pcbai must be importable, but never crash the RPC loop
+    def _log_impl(msg: str) -> None:
+        sys.stderr.write(f"[pcb-designer] {msg}\n")
+        sys.stderr.flush()
+
+
 def log(msg: str) -> None:
-    print(f"[pcb-designer] {msg}", file=sys.stderr, flush=True)
+    _log_impl(msg)
+
+
+# ── robust LLM-JSON extraction (was triplicated and brittle) ────────────────
+_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+
+
+def extract_json(raw: str) -> dict:
+    """Pull the first JSON object out of a model reply (handles prose + ``` fences)."""
+    if raw is None:
+        raise ValueError("empty model response")
+    text = raw.strip()
+    m = _FENCE.search(text)
+    if m:
+        text = m.group(1).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        raise ValueError(f"no JSON object found in model response: {text[:120]!r}")
+    return json.loads(text[start : end + 1])
 
 
 # ════════════════════════════════════════════════════════════
@@ -51,9 +89,15 @@ def _reader_thread() -> None:
                 q.put(msg)
 
 
+#: The protocol channel is bound to the *real* stdout object once, at import time, so that
+#: install_stderr_guard() (which replaces the sys.stdout attribute to divert stray print() calls)
+#: can never swallow protocol messages. Never use print()/sys.stdout for protocol output.
+_PROTOCOL_OUT = sys.__stdout__ or sys.stdout
+
+
 def _send(obj: dict) -> None:
-    sys.stdout.write(json.dumps(obj) + "\n")
-    sys.stdout.flush()
+    _PROTOCOL_OUT.write(json.dumps(obj) + "\n")
+    _PROTOCOL_OUT.flush()
 
 
 def _respond(req_id: Any, result: Any = None, error: Any = None) -> None:
@@ -101,7 +145,19 @@ def sample(
         "params": params,
     })
 
-    resp = q.get(timeout=10)
+    try:
+        from pcbai.core.config import settings as _settings
+        timeout = _settings.sample_timeout_s
+    except Exception:
+        timeout = float(os.getenv("PCB_AI_SAMPLE_TIMEOUT", "60"))
+    try:
+        resp = q.get(timeout=timeout)
+    except queue.Empty:
+        host_responses.pop(rid, None)
+        raise RuntimeError(
+            f"host sampling timed out after {timeout:.0f}s "
+            "(raise PCB_AI_SAMPLE_TIMEOUT for long reasoning calls)"
+        )
     if "error" in resp:
         raise RuntimeError(f"Sampling error: {resp['error']}")
     return resp["result"]["content"]["text"]
@@ -116,10 +172,11 @@ MANIFEST = {
     "display_name": "PCB Designer AI Agent",
     "version": "1.0.0",
     "description": (
-        "End-to-end PCB design agent: parses natural-language requirements, "
-        "generates BOMs, extracts package parameters from PDF datasheets, "
-        "produces KiCad footprints, synthesizes SKiDL schematics, and routes boards. "
-        "Optimized for LPKF ProtoLaser S4 / MultiPress S4 / Contac S4 rapid prototyping."
+        "PCB design tool server: parses natural-language requirements, builds BOMs, "
+        "extracts package parameters from PDF datasheets, generates KiCad footprints, "
+        "and (when KiCad's pcbnew is installed) assembles boards from a netlist. "
+        "Emitted files target KiCad 10. Board assembly and DRC parity require a local "
+        "KiCad install; without it those steps are reported as unavailable, not skipped silently."
     ),
     "author": "assalas",
     "host_capabilities": ["llm.sample", "llm.complete"],
@@ -140,8 +197,9 @@ MANIFEST = {
             "name": "generate_bom",
             "description": (
                 "Generate a Bill of Materials from structured requirements. "
-                "Queries Octopart vendor API when OCTOPART_API_KEY is available, "
-                "otherwise falls back to built-in catalog."
+                "Maps requirement keywords onto a small built-in part catalog (12 MPNs). "
+                "No vendor/stock lookup is implemented yet; unmatched keywords are "
+                "returned as *-UNKNOWN placeholders and listed in data.warnings."
             ),
             "parameters": [
                 {"name": "requirements_json", "type": "string", "description": "JSON string of structured requirements (output of parse_requirements)", "required": True},
@@ -176,9 +234,10 @@ MANIFEST = {
         {
             "name": "synthesize_netlist",
             "description": (
-                "Generate a SKiDL netlist from a BOM. Creates self-contained SKIDL "
-                "parts with automatic decoupling, buck converter support circuits, "
-                "and ERC checks. Returns the netlist as a string."
+                "Build a netlist structure from a BOM. CURRENT LIMITATION: this returns "
+                "component references grouped under GND/VCC only — there is no pad-level "
+                "connectivity yet, so it cannot drive a real router. Pad-level netlists land "
+                "with the PCB parser in Phase 4. Returns the netlist as a JSON object."
             ),
             "parameters": [
                 {"name": "bom_json", "type": "string", "description": "JSON array of BOM entries [{mpn, package, voltage}, ...]", "required": True},
@@ -187,10 +246,11 @@ MANIFEST = {
         {
             "name": "route_pcb",
             "description": (
-                "Route a PCB board from a netlist using KiCad pcbnew. "
-                "Applies smart heuristic placement (decoupling caps near ICs, "
-                "signal grouping) and optional experimental Manhattan routing. "
-                "Exports .kicad_pcb and .dsn (for FreeRouting)."
+                "Assemble a .kicad_pcb from a netlist using KiCad pcbnew: loads footprints "
+                "from <output_dir>/footprints, assigns pads to nets, applies heuristic "
+                "placement, and exports .dsn. Requires pcbnew; returns success:false with "
+                "reason='backend-unavailable' when KiCad is missing. Experimental Manhattan "
+                "routing (no obstacle avoidance) only runs with PCB_AI_EXPERIMENTAL_ROUTER=1."
             ),
             "parameters": [
                 {"name": "netlist_json", "type": "string", "description": "JSON netlist structure with nets and components", "required": True},
@@ -200,10 +260,12 @@ MANIFEST = {
         {
             "name": "full_pipeline",
             "description": (
-                "Run the complete end-to-end pipeline: natural-language description → "
-                "requirements → BOM → netlist → board layout. Returns all intermediate "
-                "artifacts and a comprehensive analysis report with deep reasoning about "
-                "component selection, layout trade-offs, and LPKF manufacturability."
+                "Run the end-to-end pipeline (requirements → BOM → board). data.mode reports "
+                "what actually happened: 'generated' (KiCad writers built the board) or "
+                "'template' (the shipped ESP32-C3 reference board was copied because generic "
+                "generation is unavailable). Template results carry template_only=true and a "
+                "warning — never report them to the user as a completed design. Failures return "
+                "success:false with a reason."
             ),
             "parameters": [
                 {"name": "description", "type": "string", "description": "Natural-language hardware description", "required": True},
@@ -245,13 +307,6 @@ def _tool_parse_requirements(args: dict, ctx: dict) -> dict:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": description}
             ], temperature=0.1, max_tokens=1024)
-            raw = raw.strip()
-            if raw.startswith("```json"):
-                raw = raw[7:]
-            if raw.startswith("```"):
-                raw = raw[3:]
-            if raw.endswith("```"):
-                raw = raw[:-3]
         else:
             raw = sample(
                 invoke_id,
@@ -261,17 +316,9 @@ def _tool_parse_requirements(args: dict, ctx: dict) -> dict:
                 temperature=0.1,
             )
 
-        # Extract JSON from markdown fences if any
-        raw = raw.strip()
-        if "```" in raw:
-            parts = raw.split("```")
-            raw = parts[1] if len(parts) > 1 else raw
-            if raw.lower().startswith("json"):
-                raw = raw[4:]
-        
-        result = json.loads(raw.strip())
+        result = extract_json(raw)
         result.setdefault("notes", description)
-        return {"success": True, "data": result}
+        return {"success": True, "data": result, "parser": "llm"}
     except Exception as e:
         # Fallback to local keyword extraction
         log(f"Sampling failed, falling back to local parser: {e}")
@@ -284,7 +331,14 @@ def _tool_generate_bom(args: dict, ctx: dict) -> dict:
     from pcbai.steps.bom_generator import generate_bom
     requirements = json.loads(args["requirements_json"])
     bom = generate_bom(requirements)
-    return {"success": True, "data": {"bom": bom, "count": len(bom)}}
+    unresolved = [b["mpn"] for b in bom if str(b.get("package", "")).upper() == "UNKNOWN"]
+    out: Dict[str, Any] = {"bom": bom, "count": len(bom)}
+    if unresolved:
+        out["warnings"] = [
+            f"{len(unresolved)} keyword(s) had no catalog match and were emitted as "
+            f"placeholders: {', '.join(unresolved)}. Real part sourcing is not implemented yet."
+        ]
+    return {"success": True, "data": out}
 
 
 def _tool_extract_package_from_pdf(args: dict, ctx: dict) -> dict:
@@ -366,11 +420,12 @@ def _tool_extract_package_from_pdf(args: dict, ctx: dict) -> dict:
             response_format={"type": "json_object"},
         )
 
-        print("RAW IS:", raw, file=sys.stderr)
-        start = raw.find("{")
-        end = raw.rfind("}") + 1
-        if start != -1 and end > start:
-            data = json.loads(raw[start:end])
+        try:
+            data = extract_json(raw)
+        except ValueError as parse_exc:
+            log(f"model reply was not JSON: {parse_exc}")
+            data = None
+        if data:
             from pcbai.steps.datasheet_package_extractor import PackageGuess
             guess = PackageGuess(
                 pkg_type=str(data.get("pkg_type", "unknown")).lower(),
@@ -464,83 +519,118 @@ def _tool_synthesize_netlist(args: dict, ctx: dict) -> dict:
     from pcbai.steps.schematic_synthesizer import synthesize_schematic
     bom = json.loads(args["bom_json"])
     netlist = synthesize_schematic(bom)
-    return {"success": True, "data": {"netlist": netlist}}
+    return {
+        "success": True,
+        "data": {"netlist": netlist},
+        "warnings": [
+            "placeholder netlist: nets contain component refs, not REF-PIN pairs, so there is no "
+            "pad-level connectivity. A router cannot use this yet (Phase 4 adds real netlists)."
+        ],
+    }
 
 
 def _tool_route_pcb(args: dict, ctx: dict) -> dict:
     from pcbai.steps.pcb_router import route_pcb
     netlist = json.loads(args["netlist_json"])
-    output_dir = args.get("output_dir", "/tmp/pcbai_build")
+    output_dir = args.get("output_dir") or os.getenv("PCB_AI_WORKDIR", "/tmp/pcbai_build")
     result = route_pcb(netlist, output_dir)
+    ok = bool(result.get("ok"))
+    if not ok:
+        return {
+            "success": False,
+            "error": result.get("status") or "board build failed",
+            "reason": result.get("reason", "router-failed"),
+            "data": result,
+        }
     return {"success": True, "data": result}
 
 
 def _tool_full_pipeline(args: dict, ctx: dict) -> dict:
-    """Run the complete pipeline using the new end-to-end compiler."""
-    description = args["description"]
+    """Compile a design end-to-end and return the artifacts + an engineering report.
+
+    Honesty contract (docs/AUDIT.md D1/D2): ``data.mode`` is ``"generated"`` only when the KiCad
+    writers actually built the board. A copy of the shipped reference template is reported as
+    ``mode="template", template_only=true`` with a warning, so the calling agent can never mistake
+    it for a real result. Genuine failures return ``success: false``.
+    """
+    description = args.get("description") or ""
+    if not description.strip():
+        return {"success": False, "error": "description is required", "reason": "bad-args"}
+
     invoke_id = ctx.get("invoke_id", "")
     artifacts: Dict[str, Any] = {}
 
-    log(f"Pipeline: Compiling design for prompt: {description[:80]}...")
-    
-    from pcbai.steps.design_compiler import compile_design
-    import tempfile
-    
-    # Run the full pipeline in a temporary directory
-    with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            result = compile_design(description, tmpdir)
-            
-            # Read the generated files to pass them back to the frontend
-            with open(result["pcb"], "r", encoding="utf-8") as f:
-                artifacts["pcb"] = f.read()
-                
-            with open(result["sch"], "r", encoding="utf-8") as f:
-                artifacts["sch"] = f.read()
-                
-            with open(os.path.join(tmpdir, "bom.json"), "r", encoding="utf-8") as f:
-                artifacts["bom_json"] = f.read()
-                artifacts["bom"] = json.loads(artifacts["bom_json"])
-                
-            # For backward compatibility with the report UI, run the analysis
-            log("Generating engineering analysis report...")
-            report_prompt = (
-                f"Hardware description: {description}\n\n"
-                f"Generated BOM: {artifacts['bom_json']}\n\n"
-                "Provide a short engineering analysis report."
-            )
-            sys_prompt = "You are a senior PCB design engineer."
-            
-            if os.environ.get("PCB_AI_LLM_PROVIDER") and os.environ.get("PCB_AI_LLM_PROVIDER") != "anna":
-                from pcbai.llm.provider import get_provider
-                provider = get_provider()
-                report = provider.chat([
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": report_prompt}
-                ], temperature=0.3, max_tokens=1000)
-            else:
-                report = sample(
-                    invoke_id,
-                    report_prompt,
-                    system_prompt=sys_prompt,
-                    max_tokens=1000,
-                    temperature=0.3,
-                )
-            artifacts["analysis_report"] = report
-            
-        except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            log(f"Pipeline failed: {tb}")
-            artifacts["analysis_report"] = f"Pipeline failed: {tb}"
-            # Return true so we can see the error in the UI!
-            return {"success": True, "data": artifacts}
+    from pcbai.steps.design_compiler import compile_design, DesignNotGenerated
+    from pcbai.eda import backend
 
-    return {
-        "success": True,
-        "data": artifacts,
-        "pipeline_steps_completed": 4,
-    }
+    try:
+        from pcbai.core.config import settings
+        outdir = os.path.join(settings.workdir, "pipeline", uuid.uuid4().hex[:8])
+    except Exception:
+        outdir = os.path.join(tempfile.gettempdir(), "pcbai_pipeline", uuid.uuid4().hex[:8])
+    keep = str(args.get("output_dir") or "").strip()
+    outdir = keep or outdir
+
+    log(f"Pipeline: compiling design in {outdir} (prompt: {description[:80]}...)")
+    try:
+        os.makedirs(outdir, exist_ok=True)
+        result = compile_design(description, outdir)
+    except DesignNotGenerated as exc:
+        return {
+            "success": False,
+            "error": str(exc),
+            "reason": exc.reason,
+            "data": {"capabilities": backend.capabilities().to_dict(), "detail": exc.detail},
+        }
+    except Exception as exc:
+        log(f"Pipeline failed: {traceback.format_exc()}")
+        return {"success": False, "error": f"{type(exc).__name__}: {exc}",
+                "reason": "pipeline-exception",
+                "data": {"traceback": traceback.format_exc()}}
+
+    for key, path_key in (("pcb", "pcb"), ("sch", "sch")):
+        try:
+            with open(result[path_key], "r", encoding="utf-8") as f:
+                artifacts[key] = f.read()
+        except OSError as exc:
+            return {"success": False, "error": f"generated {key} missing: {exc}",
+                    "reason": "artifact-missing", "data": artifacts}
+
+    artifacts["bom"] = result["bom"]
+    artifacts["bom_json"] = json.dumps(result["bom"], indent=2)
+    artifacts["mode"] = result["mode"]
+    artifacts["template_only"] = result["template_only"]
+    artifacts["warnings"] = result.get("warnings", [])
+    artifacts["backend"] = result.get("backend", {})
+    artifacts["paths"] = {k: result[k] for k in ("sch", "pcb", "gerbers", "zip")}
+
+    log("Generating engineering analysis report...")
+    report_prompt = (
+        f"Hardware description: {description}\n\n"
+        f"Generated BOM: {artifacts['bom_json']}\n\n"
+        f"Build mode: {result['mode']}\n"
+        f"Warnings: {'; '.join(result.get('warnings', [])) or 'none'}\n\n"
+        "Provide a short engineering analysis report. If build mode is 'template', state clearly "
+        "that no design was produced and what is required to produce one."
+    )
+    sys_prompt = "You are a senior PCB design engineer. Never claim a result you did not verify."
+    try:
+        if os.environ.get("PCB_AI_LLM_PROVIDER") and os.environ.get("PCB_AI_LLM_PROVIDER") != "anna":
+            from pcbai.llm.provider import get_provider
+            artifacts["analysis_report"] = get_provider().chat(
+                [{"role": "system", "content": sys_prompt},
+                 {"role": "user", "content": report_prompt}], temperature=0.3, max_tokens=1000)
+        else:
+            artifacts["analysis_report"] = sample(invoke_id, report_prompt,
+                                                  system_prompt=sys_prompt,
+                                                  max_tokens=1000, temperature=0.3)
+    except Exception as exc:
+        # A missing report is a degradation, not a design failure — say so, don't fake success.
+        artifacts["analysis_report"] = None
+        artifacts["warnings"].append(f"engineering report unavailable: {type(exc).__name__}: {exc}")
+
+    steps = 4 if result["mode"] == "generated" else 1
+    return {"success": True, "data": artifacts, "pipeline_steps_completed": steps}
 
 
 # ── Tool dispatch table ─────────────────────────────────────
@@ -575,7 +665,14 @@ def handle(req: dict) -> None:
         _respond(req_id, MANIFEST)
 
     elif method == "health":
-        _respond(req_id, {"status": "ready"})
+        caps: Dict[str, Any] = {"status": "ready"}
+        try:
+            from pcbai.eda import backend
+            caps["eda_backend"] = backend.capabilities().to_dict()
+            caps["degraded"] = not backend.capabilities().can_author_native
+        except Exception as exc:  # pragma: no cover
+            caps["eda_backend"] = {"error": f"probe failed: {exc}"}
+        _respond(req_id, caps)
 
     elif method == "invoke":
         params = req.get("params") or {}
@@ -611,14 +708,24 @@ def main() -> None:
     log("Starting pcb-designer Executa plugin...")
     threading.Thread(target=_reader_thread, daemon=True).start()
 
-    while True:
-        try:
-            req = agent_requests.get()
-            handle(req)
-        except KeyboardInterrupt:
-            break
-        except Exception as e:
-            log(f"Unhandled error: {e}")
+    # stdout must carry nothing but JSON-RPC. Any stray print() from pcbai/skidl/pdfminer is
+    # diverted to stderr for the lifetime of the server so the host parser can never desync.
+    try:
+        from pcbai.core.logger import install_stderr_guard
+        guard = install_stderr_guard()
+    except Exception:  # pragma: no cover
+        from contextlib import nullcontext
+        guard = nullcontext()
+
+    with guard:
+        while True:
+            try:
+                req = agent_requests.get()
+                handle(req)
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                log(f"Unhandled error: {e}")
 
 
 if __name__ == "__main__":

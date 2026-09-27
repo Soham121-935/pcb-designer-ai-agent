@@ -3,7 +3,7 @@
   "tool_id": "tool-assalas-pcb-designer-nefeer3m",
   "name": "pcb-designer",
   "display_name": "PCB Designer AI Agent",
-  "version": "1.0.13",
+  "version": "1.1.0",
   "description": "Professional PCB design agent for rapid prototyping on Anna OS. 1.0.7 adds ESP32 support.",
   "author": "assalas",
   "type": "tool",
@@ -18,7 +18,7 @@
     "llm.complete"
   ],
   "distribution": {
-    "active": "binary",
+    "active": "local",
     "profiles": {
       "local": {
         "type": "local",
@@ -31,7 +31,8 @@
           "linux-x86_64": {
             "path": "dist/pcb-designer-linux-x86_64.tar.gz",
             "entrypoint": "pcb-designer-plugin",
-            "format": "tar.gz"
+            "format": "tar.gz",
+            "note": "build first: pyinstaller pcb-designer-plugin.spec, then pack dist/pcb-designer-linux-x86_64.tar.gz"
           }
         }
       }
@@ -59,7 +60,7 @@
     },
     {
       "name": "generate_bom",
-      "description": "Generate a Bill of Materials from structured requirements. Queries Octopart when credentials available, falls back to built-in catalog.",
+      "description": "Generate a Bill of Materials from structured requirements using a built-in part catalog (12 MPNs). Vendor/stock lookups are not implemented; unmatched keywords are returned as *-UNKNOWN and reported in data.warnings.",
       "parameters": [
         {
           "name": "requirements_json",
@@ -101,7 +102,7 @@
     },
     {
       "name": "synthesize_netlist",
-      "description": "Generate a SKiDL netlist from a BOM with automatic decoupling and buck converter support circuits.",
+      "description": "Build a netlist structure from a BOM. CURRENT LIMITATION: nets contain component refs, not REF-PIN pairs, so there is no pad-level connectivity and a router cannot consume it yet.",
       "parameters": [
         {
           "name": "bom_json",
@@ -113,7 +114,7 @@
     },
     {
       "name": "route_pcb",
-      "description": "Route a PCB board from a netlist using KiCad pcbnew with smart heuristic placement and optional Manhattan routing.",
+      "description": "Assemble a .kicad_pcb from a netlist with KiCad pcbnew (footprints loaded from <output_dir>/footprints). Returns success:false with reason='backend-unavailable' when KiCad is missing.",
       "parameters": [
         {
           "name": "netlist_json",
@@ -131,7 +132,7 @@
     },
     {
       "name": "full_pipeline",
-      "description": "Run the complete end-to-end pipeline: NL description to requirements to BOM to netlist to board layout. Includes comprehensive engineering analysis report with LPKF manufacturability assessment.",
+      "description": "Run the end-to-end pipeline. data.mode reports reality: 'generated' (KiCad writers ran) or 'template' (shipped ESP32-C3 reference board copied). Template results are flagged template_only=true \u2014 never present them as a completed design.",
       "parameters": [
         {
           "name": "description",

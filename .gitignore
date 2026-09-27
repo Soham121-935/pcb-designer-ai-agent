@@ -6,10 +6,27 @@ __pycache__/
 *.egg-info/
 .venv/
 .env
+.env.*
 
-# Build
+# Build / generated output
 build/
 dist/
+work/
+.coverage
+.coverage.*
+htmlcov/
+
+# Agent working data: never commit KiCad backups or edit history
+*.bak
+.history/
+*.kicad_pcb.tmp
+*.dsn
+*.ses
+*.zip
+
+# Dev scratch (agent probes, ad-hoc output)
+.audit/
+/tmp/
 
 # IDE
 .vscode/
@@ -19,3 +36,6 @@ dist/
 .pytest_cache/
 .cache/
 reef/
+
+# Node (if a UI build is ever added)
+node_modules/

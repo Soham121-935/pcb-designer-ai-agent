@@ -1,7 +1,6 @@
 from __future__ import annotations
 from typing import List, Dict
 import os
-import requests
 
 CATALOG = {
     "mcu": [
