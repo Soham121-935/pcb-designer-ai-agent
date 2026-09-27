@@ -19,6 +19,16 @@ The agent takes a natural-language description (e.g., "Design a board with an ES
 
 The agent runs as a standalone JSON-RPC service. You can pipe a prompt directly to it.
 
+
+### System Requirements (For Dynamic Routing)
+
+If you are using the raw, dynamic LLM auto-routing tools, you **must** have KiCad installed on your system.
+* KiCad 6.0 or newer
+* The `pcbnew` Python bindings (usually located at `/usr/lib/kicad/lib/python3/dist-packages`)
+* KiCad footprint libraries installed at `/usr/share/kicad/footprints/`
+
+*Note: For the Anna OS cloud deployment, we bypass this requirement by bundling a pre-compiled template project directly into the PyInstaller executable.*
+
 ### 1. Configure your LLM Provider
 
 The agent is model-agnostic. You must set environment variables to tell the agent which API to use. 
@@ -52,8 +62,22 @@ export PCB_AI_LLM_PROVIDER=lmstudio  # or ollama
 
 ### 2. Run the Agent Locally
 
-You can interact with the agent using the provided `test_rpc.py` script, which sends a test prompt to the pipeline:
+You have several ways to test the agent locally depending on what you want to evaluate:
 
+**A. Test the Anna App Pipeline (Static PCB Template + LLM Report)**
+Because Anna OS cloud sandboxes lack KiCad dependencies, the main `full_pipeline` copies a pre-generated, perfectly routed ESP32-C3 PCB template, but uses the LLM to generate the final Engineering Analysis Report.
+```bash
+python3 gemini_test.py
+```
+
+**B. Test the Raw AI Tools (Dynamic Pipeline)**
+If you want to see the LLM's true intelligence in breaking down requirements and generating a dynamic BOM/Netlist:
+```bash
+python3 gemini_e2e.py
+```
+
+**C. RPC Testing**
+You can interact with the agent using the provided `test_rpc.py` script:
 ```bash
 python3 test_rpc.py
 ```
