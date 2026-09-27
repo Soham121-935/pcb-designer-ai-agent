@@ -11,7 +11,7 @@ export PCB_AI_PROJECT ?= $(ROOT)/build/demo-project
 export PCB_AI_WORKDIR   ?= $(ROOT)/build
 export PCB_AI_LLM_PROVIDER ?= dummy
 
-.PHONY: help bootstrap test test-verbose lint fmt tools backend demo rpc clean kiwad-check
+.PHONY: help bootstrap test test-verbose lint fmt tools backend scaffold parity demo rpc clean
 
 help:
 	@printf "PCB design agent targets\n"
@@ -20,6 +20,8 @@ help:
 	@printf "  lint / fmt    ruff checks / autofix\n"
 	@printf "  tools         list every tool, its safety class and maturity\n"
 	@printf "  backend       show which EDA backends are usable here\n"
+	@printf "  scaffold      generate the KiCad 10 SV-16 project into build/sv16 (no KiCad needed)\n"
+	@printf "  parity        run the KiCad parity gates (needs kicad-cli/pcbnew; skipped if absent)\n""
 	@printf "  demo          end-to-end: requirements -> BOM -> footprint -> pipeline\n"
 	@printf "  rpc           start the Anna plugin and call full_pipeline over stdio\n"
 
@@ -46,6 +48,17 @@ tools:
 
 backend:
 	@$(PY) -m pcbai.agent.cli call capabilities
+
+# The generator is pure Python: it must run (and validate itself) on any machine, KiCad or not.
+scaffold:
+	@$(PY) -m pcbai.agent.cli scaffold $(PKG_ROOT)/pcbai/boards/sv16.yaml --out $(ROOT)/build/sv16 --json
+
+# Strict DRC/gerber/round-trip parity lives in CI (see .github/workflows/ci.yml). These two scripts are
+# the same gates, and they exit 0 with a SKIPPED line where KiCad is missing — by design, so that a
+# sandbox without KiCad can still run every target here and read the honest reason.
+parity:
+	@$(PY) scripts/kicad_parity_report.py $(ROOT)/build/sv16/sv16-drc.json
+	@$(PY) scripts/kicad_roundtrip_check.py $(ROOT)/build/sv16/sv16.kicad_pcb
 
 demo:
 	@$(PY) -m pcbai.agent.cli call parse_requirements --arg description="LFE5U-12F FPGA with USB-C, 3.3V LDO and a 12V buck converter"

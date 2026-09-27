@@ -40,20 +40,8 @@ PLANNED: Dict[str, ToolSpec] = {
     "inspect_project": ToolSpec("inspect_project", "Summarise a whole KiCad project (pcb+sch+pro)",
                                {"path": "string: project dir or .kicad_pcb"}, mutating=False,
                                maturity="not-implemented (Phase 4)"),
-    "inspect_pcb": ToolSpec("inspect_pcb", "Board model: outline, layers, nets, components, rules",
-                            {"path": "string"}, maturity="not-implemented (Phase 4)"),
     "inspect_schematic": ToolSpec("inspect_schematic", "Schematic model: symbols, pins, nets",
                                   {"path": "string"}, maturity="not-implemented (Phase 4)"),
-    "list_components": ToolSpec("list_components", "All components with ref/value/footprint/position",
-                                {"path": "string"}, maturity="not-implemented (Phase 4)"),
-    "get_component": ToolSpec("get_component", "One component: pads, nets, bbox, neighbours",
-                              {"ref": "string e.g. U1"}, maturity="not-implemented (Phase 4)"),
-    "get_nets": ToolSpec("get_nets", "All nets with pad counts and unrouted/short flags",
-                         {"path": "string"}, maturity="not-implemented (Phase 4)"),
-    "get_board_outline": ToolSpec("get_board_outline", "Board geometry: outline, bbox, area",
-                                  {"path": "string"}, maturity="not-implemented (Phase 4)"),
-    "get_design_rules": ToolSpec("get_design_rules", "Net classes, clearances, track/via widths",
-                                 {"path": "string"}, maturity="not-implemented (Phase 4)"),
     "add_component": ToolSpec("add_component", "Place a new component from a footprint",
                               {"footprint": "string", "ref": "string", "at": "array[x, y]"},
                               mutating=True, maturity="not-implemented (Phase 5)"),
@@ -68,18 +56,58 @@ PLANNED: Dict[str, ToolSpec] = {
                           mutating=True, maturity="not-implemented (Phase 5)"),
     "route_net": ToolSpec("route_net", "Route all unrouted pads of one net", {"net": "string"},
                           mutating=True, needs_kicad=True, maturity="not-implemented (Phase 5)"),
-    "run_drc": ToolSpec("run_drc", "Geometry/DRC findings with severity and location",
-                        {"path": "string"}, needs_kicad=True, maturity="not-implemented (Phase 6)"),
+    "run_drc": ToolSpec("run_drc", "KiCad's own DRC (needs kicad-cli); use validate_board for the "
+                                 "built-in geometry checks", {"path": "string"}, needs_kicad=True,
+                        maturity="not-implemented (Phase 6); validate_board covers the same "
+                                 "checks without KiCad"),
     "run_erc": ToolSpec("run_erc", "Schematic connectivity/electrical findings",
                         {"path": "string"}, maturity="not-implemented (Phase 6)"),
-    "validate_project": ToolSpec("validate_project", "Parser + connectivity + fab checks",
-                                 {"path": "string"}, maturity="not-implemented (Phase 6)"),
-    "save_project": ToolSpec("save_project", "Persist in-memory model with backup + verification",
-                             {"path": "string"}, mutating=True, maturity="not-implemented (Phase 5)"),
 }
 
 
 IMPLEMENTED: Dict[str, ToolSpec] = {
+    # ── native KiCad model tools (no pcbnew, no KiCad install) ─────────────────
+    "inspect_pcb": ToolSpec("inspect_pcb", "Parse a .kicad_pcb natively: format dialect, stackup, "
+                            "counts, rule verdict", {"path": "string: .kicad_pcb or project dir"}),
+    "list_components": ToolSpec("list_components", "ref/value/footprint/position/pads/nets per part",
+                                {"path": "string", "dnp": "boolean", "pattern": "string"}),
+    "get_component": ToolSpec("get_component", "One part: every pad with net+geometry, courtyard, "
+                               "nearest neighbours", {"ref": "string e.g. U1",
+                               "path": "string"}, required=["ref"]),
+    "get_nets": ToolSpec("get_nets", "Nets with pad counts, class, tracks/vias and a connectivity "
+                         "proxy", {"path": "string", "min_pads": "integer",
+                         "only_undrouted": "boolean"}),
+    "get_board_outline": ToolSpec("get_board_outline", "Edge.Cuts rings, size, area, parts outside",
+                                  {"path": "string"}),
+    "get_design_rules": ToolSpec("get_design_rules", "Board minimums + net classes (board file and, "
+                                 "when present, .kicad_pro)", {"path": "string"}),
+    "validate_board": ToolSpec("validate_board", "Our full check set: clearance, shorts, drills, "
+                               "annular rings, courtyards, outline, nets, zones",
+                               {"path": "string"}),
+    "parse_sexp": ToolSpec("parse_sexp", 'Raw s-expression, or a subtree addressed by a selector '
+                           'such as ["setup", "stackup"]',
+                          {"path": "string", "selector": "array", "max_depth": "integer"},
+                          required=["path"]),
+    "list_footprint_kinds": ToolSpec("list_footprint_kinds", "Footprint builders we can generate "
+                                     "from data, with their sources"),
+    "inspect_footprint": ToolSpec("inspect_footprint", "Preview a footprint spec: pads, bbox, the "
+                                  "actual s-expression", {"spec": "string|object"},
+                                  required=["spec"]),
+    "generate_scaffold": ToolSpec("generate_scaffold", "Design spec (YAML/JSON/dict) → 4-layer "
+                                  "KiCad project: placement, planes, fanout, checked tracks",
+                                  {"spec": "string|object", "out_dir": "string",
+                                   "stem": "string", "dialect": "kicad-8|kicad-9|kicad-10",
+                                   "route": "boolean", "dry_run": "boolean"},
+                                  required=["spec"], mutating=True),
+    "write_board": ToolSpec("write_board", "Write a board dict / Board.to_json dump and verify by "
+                            "re-reading", {"board_spec": "object|string", "out_dir": "string",
+                            "stem": "string", "dialect": "string"}, required=["board_spec"],
+                            mutating=True),
+    "apply_edit": ToolSpec("apply_edit", "Model-level edits (move/set_rule/assign_net/…) written "
+                           "back with re-read verification", {"edits": "array of {op, …}",
+                           "path": "string", "dry_run": "boolean",
+                           "allow_lossy": "boolean"}, required=["edits"], mutating=True),
+
     "capabilities": ToolSpec("capabilities", "Report usable EDA backends (pcbnew/kicad-cli/libs)"),
     "list_project_files": ToolSpec("list_project_files", "List KiCad/BOM files in the working project",
                                    {"path": "string: optional dir", "pattern": "string: optional name filter"}),
@@ -134,7 +162,7 @@ def dispatch(name: str, arguments: Optional[Dict[str, Any]] = None, *,
 
     * unknown tool              → reason "unknown-tool" (+ a pointer to the closest planned tool)
     * planned/not-implemented   → reason "not-implemented" with the phase that provides it
-    * mutating without allow    → reason "needs-mutation-approval"
+    * mutating without allow    → reason "needs-mutation-approval"  (dry_run=true is not mutating)
     * mutating without confirm  → reason "needs-confirmation"
     """
     from pcbai.agent.tools import fail, ok  # local import: keep registry importable standalone
@@ -156,10 +184,16 @@ def dispatch(name: str, arguments: Optional[Dict[str, Any]] = None, *,
     if fn is None:
         return fail(f"tool '{name}' has no handler bound", "not-wired", data={"spec": spec.describe()})
 
-    if spec.mutating and not allow_mutating:
+    # A call that declares dry_run=True cannot write, so it is not a mutation as far as policy goes.
+    # Handlers that honour this: generate_scaffold, apply_edit, write_board (they return before any
+    # filesafe call). Anything else that ignores dry_run still gets gated by `spec.mutating`.
+    mutating = spec.mutating and args.get("dry_run") is not True
+
+    if mutating and not allow_mutating:
         return fail(f"'{name}' mutates project files and was refused by policy", "needs-mutation-approval",
-                    data={"spec": spec.describe()})
-    if spec.mutating and spec.name != "create_backup" and not confirm:
+                    data={"spec": spec.describe(),
+                          "hint": "pass dry_run=true to inspect the result without writing"})
+    if mutating and spec.name != "create_backup" and not confirm:
         return fail(f"'{name}' writes into the project; re-call with confirm=true", "needs-confirmation",
                     data={"spec": spec.describe()})
 

@@ -23,7 +23,7 @@ fi
 echo "==> python: $("$PY" --version 2>&1)"
 echo "==> installing runtime + test deps"
 "$PY" -m pip install -q --upgrade pip
-"$PY" -m pip install -q click requests python-dotenv pytest pypdf
+"$PY" -m pip install -q click pyyaml requests python-dotenv pytest pypdf
 
 echo "==> editable install (so 'pcbai' / 'pcbai-agent' work without PYTHONPATH)"
 "$PY" -m pip install -q -e . 2>/dev/null \

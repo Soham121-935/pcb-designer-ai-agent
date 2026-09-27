@@ -22,37 +22,16 @@ from pcbai.core.filesafe import UnsafeWriteError, atomic_write_text, check_writa
 from pcbai.core.logger import get_logger
 from pcbai.eda import backend
 
+# ok/fail/project_root live in .envelope so the KiCad handlers can share them without a cycle; they
+# stay importable from this module because that is where callers have always found them.
+from .envelope import fail, ok, project_root  # noqa: F401
+
 logger = get_logger("pcbai.tools")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Envelope helpers
 # ─────────────────────────────────────────────────────────────────────────────
-
-def ok(data: Any, warnings: Optional[List[str]] = None, **extra) -> Dict[str, Any]:
-    """Success envelope. `warnings` is always present (possibly []) so callers never KeyError."""
-    out: Dict[str, Any] = {"success": True, "data": data, "error": None, "warnings": list(warnings or [])}
-    out.update(extra)
-    return out
-
-
-def fail(error: str, reason: str = "error", data: Any = None,
-         warnings: Optional[List[str]] = None) -> Dict[str, Any]:
-    return {"success": False, "data": data, "error": str(error), "reason": reason,
-            "warnings": list(warnings or [])}
-
-
-def project_root(explicit: Optional[str] = None) -> str:
-    """Directory the agent is currently working in.
-
-    Priority: explicit argument → $PCB_AI_PROJECT → $PCB_AI_WORKDIR/demo-project.
-    Real work (e.g. the SV-16 board) must be pointed at a checked-in project dir with
-    PCB_AI_PROJECT; generated scratch then stays under build/ instead of polluting the repo.
-    """
-    root = explicit or os.getenv("PCB_AI_PROJECT") or os.path.join(settings.workdir, "demo-project")
-    os.makedirs(root, exist_ok=True)
-    return os.path.abspath(root)
-
 
 def backend_repo_root() -> str:
     here = os.path.dirname(os.path.abspath(__file__))
@@ -460,6 +439,10 @@ def extract_package_from_pdf_tool(pdf_path: str) -> Dict[str, Any]:
 
 # Registry of callables used by registry.py — kept in one place so the CLI, the Anna plugin and
 # (Phase 3) the LLM loop all dispatch through the same code.
+#: native KiCad handlers (no pcbnew): board reads/validates/edits through pcbai.kicad
+from .kicad_tools import TOOL_FUNCTIONS as _KICAD_TOOLS  # noqa: E402
+
+
 TOOL_FUNCTIONS: Dict[str, Callable[..., Dict[str, Any]]] = {
     "capabilities": capabilities_tool,
     "list_project_files": list_project_files,
@@ -473,4 +456,5 @@ TOOL_FUNCTIONS: Dict[str, Callable[..., Dict[str, Any]]] = {
     "synthesize_netlist": synthesize_netlist_tool,
     "route_pcb": route_pcb_tool,
     "extract_package_from_pdf": extract_package_from_pdf_tool,
+    **_KICAD_TOOLS,
 }

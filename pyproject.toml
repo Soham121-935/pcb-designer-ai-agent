@@ -20,6 +20,7 @@ license = { file = "LICENSE" }
 authors = [{ name = "PCB Designer AI Agent Contributors" }]
 dependencies = [
   "click>=8.1",
+  "pyyaml>=6.0",        # scaffold specs are YAML (pcbai/boards/*.yaml, load_spec)
   "requests>=2.31",
   "python-dotenv>=1.0",
 ]

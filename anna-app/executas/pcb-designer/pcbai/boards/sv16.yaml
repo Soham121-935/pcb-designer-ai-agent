@@ -1,0 +1,279 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# SV-16 core board — 4-layer scaffold spec
+# ──────────────────────────────────────────────────────────────────────────────
+# This file is the ONLY thing you need to edit to make the generated board match
+# your real SV-16 pinout.  Regenerate with:
+#
+#     pcbai sv16 --out build/sv16            # or: make sv16
+#
+# Every pad number below maps to a net name.  Unknown/placeholder names are fine
+# (KiCad will show them in the ratsnest), but the *electrical* sections (power,
+# crystal, reset, boot, debug) are what the scaffold actually fans out.
+#
+# ⚠  PLACEHOLDER PIN MAP: the U1 `pins:` mapping is a generic 48-pin microcontroller
+#    assignment, NOT your datasheet.  Replace it before you trust any trace width.
+#    Run `pcbai validate build/sv16/sv16.kicad_pcb` afterwards: it re-reads what was
+#    written and reports shorts/clearances/outline problems from the file, not from
+#    this spec.
+name: sv16
+title: "SV-16 core board (4-layer)"
+revision: "0.1"
+company: "Soham121"
+note: "Agent-generated scaffold: stackup, placement, planes and power fanout done; signals left for interactive routing."
+
+outline:
+  width: 60
+  height: 46
+  origin: [0, 0]
+
+stackup:
+  copper_layers: 4          # signal / GND / power / signal
+  thickness: 1.6
+  core_count: 1
+  core: 1.069               # mm, 2116-ish core between In1/In2
+  prepreg: 0.214
+  copper_outer_mm: 0.05
+  mask: 0.01
+  epsilon_r: 4.4
+  loss_tangent: 0.017
+
+# ── fab limits. EDIT THESE for your vendor; the generator obeys them and refuses
+#    to call a board clean when it violates them.
+rules:
+  # Baseline = what a mainstream 4-layer prototyper accepts (JLC04101H-7628 class: 5 mil/5 mil outer).
+  # Replace these with your fab's numbers before ordering; the generator never invents its own.
+  min_clearance: 0.127
+  min_track_width: 0.127
+  min_via_drill: 0.3
+  min_via_diameter: 0.6
+  min_hole_to_hole: 0.5
+  min_copper_to_edge: 0.3
+  min_text_height: 1.0
+  min_text_thickness: 0.15
+  min_courtyard_clearance: 0.25
+  annular_ring_min: 0.15
+
+net_classes:
+  Power:
+    clearance: 0.25
+    track_width: 0.6          # ~1 A on 35 µm outer copper, 2 oz-copper derated
+    via_diameter: 0.9
+    via_drill: 0.4
+    nets: [VBUS, +5V, +3V3, GND]
+  Clock:
+    clearance: 0.2
+    track_width: 0.2
+    nets: [XL1, XL2]
+  Debug:
+    clearance: 0.2
+    track_width: 0.25
+    nets: [SWDIO, SWCLK, NRST, BOOT0]
+  USB:
+    clearance: 0.2
+    track_width: 0.25
+    diff_pair_width: 0.25
+    diff_pair_gap: 0.25
+    nets: [USB_DP, USB_DN]
+
+# Solid planes on the two inner layers: this is the whole reason for 4 layers.
+planes:
+  - net: GND
+    layer: In1.Cu
+    clearance: 0.25
+    thermal_gap: 0.25
+    thermal_bridge_width: 0.5
+    margin: 0.3
+  - net: +3V3
+    layer: In2.Cu
+    clearance: 0.25
+    margin: 0.3
+  # keepout so no copper crowds the board edge / mounting barrels
+  - net: GND
+    layer: In1.Cu
+    margin: 0.25
+    fill: false
+    name: edge_keepout
+
+fanout:
+  power_nets: [+5V, VBUS, +3V3]
+  ground_net: GND
+
+placement:
+  origin: [5, 5]
+  gap: 0.3
+
+parts:
+  # ── the MCU ────────────────────────────────────────────────────────────────
+  - ref: U1
+    value: SV16
+    group: mcu
+    at: [29.0, 22.0]           # fixed position: the scaffold places the rest around it
+    footprint:
+      kind: lqfp
+      name: SV16_LQFP48_7x7_P0.5
+      body: 7.0
+      pitch: 0.5
+      leads_per_side: 12
+      pad_e: 1.0
+      pad_w: 0.45
+    pins:                       # ← REPLACE WITH YOUR SV-16 PINOUT
+      "1": +3V3
+      "2": GND
+      "3": XL1
+      "4": XL2
+      "5": NRST
+      "6": BOOT0
+      "7": SWDIO
+      "8": SWCLK
+      "9": USB_DP
+      "10": USB_DN
+      "11": +3V3
+      "12": GND
+      "13": P0.0
+      "14": P0.1
+      "15": P0.2
+      "16": P0.3
+      "17": I2C_SDA
+      "18": I2C_SCL
+      "19": SPI0_SCK
+      "20": SPI0_MOSI
+      "21": SPI0_MISO
+      "22": SPI0_CS
+      "23": +3V3
+      "24": GND
+      "25": UART0_TX
+      "26": UART0_RX
+      "27": P1.0
+      "28": P1.1
+      "29": P1.2
+      "30": P1.3
+      "31": ADC0
+      "32": ADC1
+      "33": VREF+
+      "34": GND
+      "35": +3V3
+      "36": P2.0
+      "37": P2.1
+      "38": P2.2
+      "39": P2.3
+      "40": LED1
+      "41": P3.0
+      "42": P3.1
+      "43": P3.2
+      "44": P3.3
+      "45": +3V3
+      "46": GND
+      "47": P3.4
+      "48": P3.5
+
+  # ── power in: USB-C, 5 V → 3.3 V LDO, protection ──────────────────────────
+  - ref: J1
+    value: USB-C
+    group: power
+    footprint: {kind: usb_c}
+    pins:                       # functions from USB-C Table 3-2 (see footprints.usb_c)
+      A4: VBUS
+      B4: VBUS
+      A9: VBUS
+      B9: VBUS
+      A6: USB_DP
+      B6: USB_DP
+      A7: USB_DN
+      B7: USB_DN
+      A5: CC1                   # 5.1 k pulldowns below: this board is a UFP, 5 V / 3 A max
+      B5: CC2
+      A1: GND
+      B1: GND
+      A12: GND
+      B12: GND
+      S1: GND
+      S2: GND
+      S3: GND
+      S4: GND                   # A8/B8 (SBU1/SBU2) deliberately left unconnected
+  - {ref: R_CC1, value: 5.1k, group: power, footprint: "0402", pins: {"1": CC1, "2": GND}}
+  - {ref: R_CC2, value: 5.1k, group: power, footprint: "0402", pins: {"1": CC2, "2": GND}}
+  - ref: U2
+    value: "3V3-LDO"
+    group: power
+    footprint: {kind: sot23, name: SOT-23-5, pads: 5}
+    pins: {"1": +5V, "2": GND, "3": +3V3, "4": +5V, "5": +3V3}   # pin 4 = EN, tied to the rail
+  - {ref: C_VIN1, value: 4.7u, group: power, footprint: "0603", pins: {"1": +5V, "2": GND}}
+  - {ref: C_VIN2, value: 100n, group: power, footprint: "0402", pins: {"1": +5V, "2": GND}}
+  - {ref: C_VOUT1, value: 4.7u, group: power, footprint: "0603", pins: {"1": +3V3, "2": GND}}
+  - {ref: C_VOUT2, value: 100n, group: power, footprint: "0402", pins: {"1": +3V3, "2": GND}}
+  - {ref: FB1, value: "600R@100M", group: power, footprint: "0603",
+    pins: {"1": VBUS, "2": +5V}}          # VBUS from the connector → filtered +5V rail
+
+  # ── decoupling: one 100 nF per supply pair, close to the MCU ───────────────
+  - {ref: C1, value: 100n, group: decap, footprint: "0402", pins: {"1": +3V3, "2": GND}}
+  - {ref: C2, value: 100n, group: decap, footprint: "0402", pins: {"1": +3V3, "2": GND}}
+  - {ref: C3, value: 100n, group: decap, footprint: "0402", pins: {"1": +3V3, "2": GND}}
+  - {ref: C4, value: 1u,   group: decap, footprint: "0402", pins: {"1": +3V3, "2": GND}}
+  - {ref: C5, value: 100n, group: decap, footprint: "0402", pins: {"1": VREF+, "2": GND}}
+
+  # ── clock ──────────────────────────────────────────────────────────────────
+  - ref: Y1
+    value: 12MHz
+    group: clock
+    footprint: {kind: crystal}
+    pins: {"1": XL1, "2": XL2}
+  - {ref: C_X1, value: 18p, group: clock, footprint: "0402", pins: {"1": XL1, "2": GND}}
+  - {ref: C_X2, value: 18p, group: clock, footprint: "0402", pins: {"1": XL2, "2": GND}}
+
+  # ── reset / boot ───────────────────────────────────────────────────────────
+  - ref: SW1
+    value: RESET
+    group: input
+    footprint: {kind: tact}
+    pins: {"1": NRST, "2": NRST, "3": GND, "4": GND, SH1: GND, SH2: GND}
+  - {ref: R_NRST, value: 10k, group: input, footprint: "0402", pins: {"1": NRST, "2": +3V3}}
+  - ref: SW2
+    value: BOOT
+    group: input
+    footprint: {kind: tact}
+    pins: {"1": BOOT0, "2": BOOT0, "3": GND, "4": GND, SH1: GND, SH2: GND}
+  - {ref: R_BOOT, value: 10k, group: input, footprint: "0402", pins: {"1": BOOT0, "2": GND}}
+
+  # ── debug + user IO ────────────────────────────────────────────────────────
+  - ref: J2
+    value: DEBUG
+    group: debug
+    footprint: {kind: pin_header, name: "Hdr_1x06_2.54mm", pins: 6}
+    pins: {"1": +3V3, "2": SWDIO, "3": SWCLK, "4": UART0_TX, "5": UART0_RX, "6": GND}
+  - ref: J3
+    value: IO-A
+    group: io
+    footprint: {kind: pin_header, name: "Hdr_1x10_2.54mm", pins: 10}
+    pins: {"1": +3V3, "2": GND, "3": P0.0, "4": P0.1, "5": P0.2, "6": P0.3, "7": I2C_SDA,
+           "8": I2C_SCL, "9": ADC0, "10": ADC1}
+  - ref: J4
+    value: IO-B
+    group: io
+    footprint: {kind: pin_header, name: "Hdr_1x10_2.54mm", pins: 10}
+    pins: {"1": GND, "2": P1.0, "3": P1.1, "4": P1.2, "5": P1.3, "6": SPI0_SCK, "7": SPI0_MOSI,
+           "8": SPI0_MISO, "9": SPI0_CS, "10": +3V3}
+  - ref: J5
+    value: IO-C
+    group: io
+    footprint: {kind: pin_header, name: "Hdr_1x08_2.54mm", pins: 8}
+    pins: {"1": P2.0, "2": P2.1, "3": P2.2, "4": P2.3, "5": P3.0, "6": P3.1, "7": P3.2,
+           "8": GND}
+  - ref: J6
+    value: IO-D
+    group: io
+    footprint: {kind: pin_header, name: "Hdr_1x06_2.54mm", pins: 6}
+    pins: {"1": P3.3, "2": P3.4, "3": P3.5, "4": VREF+, "5": NRST, "6": GND}
+  - {ref: D1, value: "LED grn", group: io, footprint: "0805",
+    pins: {"1": +3V3, "2": LED1}}         # 1 = anode; MCU sinks the cathode side
+  - {ref: R_LED, value: 1k, group: io, footprint: "0402", pins: {"1": LED1, "2": GND}}
+
+  # ── mechanical: 4 × unplated 3.2 mm barrels, one per corner ────────────────
+  - {ref: H1, value: M3, group: mech, at: [2.5, 2.5], footprint: {kind: mounting_hole}}
+  - {ref: H2, value: M3, group: mech, at: [57.5, 2.5], footprint: {kind: mounting_hole}}
+  - {ref: H3, value: M3, group: mech, at: [2.5, 43.5], footprint: {kind: mounting_hole}}
+  - {ref: H4, value: M3, group: mech, at: [57.5, 43.5], footprint: {kind: mounting_hole}}
+
+silkscreen:
+  - {text: "SV-16 CORE  4L  rev 0.1", x: 30, y: 44.4, rot: 0}
+  - {text: "5V in",  x: 6.5, y: 3.2, rot: 0}
+  - {text: "DEBUG",  x: 41.0, y: 3.2, rot: 0}

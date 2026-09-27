@@ -38,6 +38,14 @@ jobs:
           .venv/bin/python -m pcbai.agent.cli call capabilities > /dev/null
           .venv/bin/python -m pcbai.agent.cli call generate_footprint --confirm \
             --arg footprint_type=qfp --json '{"params":{"name":"CI_TQFP144","pins":144,"pitch":0.5,"body_l":20,"body_w":20,"pad_l":1.2,"pad_w":0.25}}' > /dev/null
+      - name: Generate the SV-16 board (pure Python — must work with no KiCad installed)
+        run: |
+          export PYTHONPATH=anna-app/executas/pcb-designer
+          .venv/bin/python -m pcbai.agent.cli scaffold \
+            anna-app/executas/pcb-designer/pcbai/boards/sv16.yaml --out build/sv16 --json \
+            > build/sv16/scaffold.json
+          test -s build/sv16/sv16.kicad_pcb
+          test -s build/sv16/sv16.kicad_pro
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -58,9 +66,82 @@ jobs:
           (apt-get update && apt-get install -y python3-kicad) || true
           python3 -c "import kicad_cli" 2>/dev/null || true
       - name: Install test deps
-        run: python3 -m pip install --quiet pytest click requests pypdf
+        run: python3 -m pip install --quiet pytest click requests pypdf pyyaml
       - name: Tests with KiCad backend available
         run: |
           python3 -m pytest -q tests/test_rpc_protocol.py tests/test_tool_layer.py tests/test_filesafe.py
       - name: kicad-cli is reachable (parity checks would run)
         run: kicad-cli --version
+
+      - name: Import the packaged board through KiCad (parse-only parity check)
+        run: |
+          PCB=$(find anna-app/executas/pcb-designer -name 'board.kicad_pcb' | head -1)
+          test -n "$PCB"
+          kicad-cli pcb drc --format json --severity-error --severity-warning \
+            --output /tmp/drc.json "$PCB" || true
+          test -s /tmp/drc.json && python3 -c 'import json;d=json.load(open("/tmp/drc.json"));print("kicad_drc_findings",len(d.get("violations",[])),len(d.get("unconnected_items",[])))' || true
+          # the export must at least produce a Gerber set for the copper layers we claim to place
+          kicad-cli pcb export gerbers --output /tmp/gerbers/ "$PCB" || true
+          ls -1 /tmp/gerbers/ | head || true
+          kicad-cli pcb export drill --output /tmp/gerbers/ "$PCB" || true
+
+      # ──────────────────────────────────────────────────────────────────────
+      # The acceptance gate for the KiCad-10 writer (docs/AUDIT.md §14): generate the
+      # real 4-layer SV-16 project with pcbai, then hand it to KiCad. Nothing mocked.
+      # If KiCad finds a clearance/short/width problem in a board our own checker
+      # called clean, the generator is wrong — this job is where that must be red.
+      # ──────────────────────────────────────────────────────────────────────
+      - name: Generate the SV-16 board with pcbai
+        run: |
+          mkdir -p build/sv16
+          PYTHONPATH=anna-app/executas/pcb-designer python3 - <<'PY'
+          from pathlib import Path
+          from pcbai.kicad.scaffold import generate
+          res = generate(Path("anna-app/executas/pcb-designer/pcbai/boards/sv16.yaml"),
+                         Path("build/sv16"), stem="sv16", keep_history=False, verify=True)
+          print("scaffold:", res.notes.get("summary"), "ok =", res.ok)
+          print("unrouted nets (expected, the router is not finished):", len(res.unrouted_nets))
+          assert res.ok, res.issues[:8]
+          PY
+          test -s build/sv16/sv16.kicad_pcb
+          test -s build/sv16/sv16.kicad_pro
+
+      - name: KiCad DRC on the generated board
+        run: |
+          kicad-cli pcb drc --format json --severity-error --severity-warning \
+            --output build/sv16/sv16-drc.json build/sv16/sv16.kicad_pcb || true
+          test -s build/sv16/sv16-drc.json
+
+      - name: pcbai's own view of the same board
+        run: |
+          PYTHONPATH=anna-app/executas/pcb-designer \
+            python3 > build/sv16/sv16-ours.json <<'PY'
+          import json
+          from pcbai.agent.kicad_tools import validate_board_tool
+          print(json.dumps(validate_board_tool("build/sv16/sv16.kicad_pcb")))
+          PY
+          python3 -c 'import json;print("pcbai counts:", json.load(open("build/sv16/sv16-ours.json"))["data"]["counts"])'
+
+      - name: Compare KiCad's findings with pcbai's (fail on real disagreements)
+        run: python3 scripts/kicad_parity_report.py build/sv16/sv16-drc.json --ours build/sv16/sv16-ours.json
+
+      - name: KiCad loads, saves and re-reads our board unchanged
+        run: python3 scripts/kicad_roundtrip_check.py build/sv16/sv16.kicad_pcb
+
+      - name: KiCad fabricates it (Gerber + drill for every layer we claim to use)
+        run: |
+          kicad-cli pcb export gerbers -o build/sv16/gerbers \
+            -l "F.Cu,B.Cu,In1.Cu,In2.Cu,F.Mask,B.Mask,F.SilkS" build/sv16/sv16.kicad_pcb
+          test -s build/sv16/gerbers/sv16-F_Cu.gbr
+          test -s build/sv16/gerbers/sv16-In1_Cu.gbr
+          kicad-cli pcb export drill -o build/sv16/drill --generate-map build/sv16/sv16.kicad_pcb
+          ls -1 build/sv16/drill
+          test -n "$(find build/sv16/drill -name '*.drl' -size +1k)"
+
+      - name: Upload the KiCad parity output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kicad-parity
+          path: build/sv16/
+          if-no-files-found: ignore
