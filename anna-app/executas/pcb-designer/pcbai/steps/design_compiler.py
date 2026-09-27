@@ -9,7 +9,11 @@ def compile_design(prompt: str, output_dir: str) -> dict:
     os.makedirs(output_dir, exist_ok=True)
     
     import shutil
-    template_dir = os.path.join(os.path.dirname(__file__), "template_project")
+    import sys
+    if hasattr(sys, '_MEIPASS'):
+        template_dir = os.path.join(sys._MEIPASS, "pcbai", "steps", "template_project")
+    else:
+        template_dir = os.path.join(os.path.dirname(__file__), "template_project")
     
     # Copy all files from template_dir to output_dir
     for item in os.listdir(template_dir):

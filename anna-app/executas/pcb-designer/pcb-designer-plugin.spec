@@ -5,7 +5,7 @@ a = Analysis(
     ['plugin.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('pcbai/steps/template_project', 'pcbai/steps/template_project')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
